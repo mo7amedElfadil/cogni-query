@@ -1,0 +1,145 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 11,
+        "title": "Setup Docker Compose Environment",
+        "description": "Set up the complete development environment using Docker and Docker Compose. This includes creating the docker-compose.yml file to define and orchestrate all services: FastAPI, React, Celery, Redis, MongoDB, and Qdrant.",
+        "details": "Create a `docker-compose.yml` file. Define services for 'api' (FastAPI), 'frontend' (React/Vite), 'worker' (Celery), 'redis' (message broker), 'mongo' (database), and 'qdrant' (vector store). Ensure all services are on the same Docker network to allow for communication. Use environment variables for configuration (e.g., database URIs, ports). The goal is to have a single `docker-compose up` command launch the entire application stack.",
+        "testStrategy": "Run `docker-compose up -d`. Verify that all containers start successfully without errors using `docker ps`. Check container logs to ensure services like Redis, MongoDB, and Qdrant are ready to accept connections. Ping services from within the API container to confirm network connectivity.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "in-progress",
+        "subtasks": []
+      },
+      {
+        "id": 12,
+        "title": "Initialize FastAPI Backend and Database Models",
+        "description": "Initialize the FastAPI backend application, including defining the MongoDB data models for 'documents' and 'chat_sessions' as specified in the PRD. This sets the foundation for all subsequent API endpoints.",
+        "details": "Create the main FastAPI application file. Use Pydantic for data validation and to define the schemas. Implement the MongoDB connection logic using `pymongo`. Define the `documents` collection schema: `{ _id, user_id, filename, upload_date, status: ('processing' | 'completed' | 'failed') }` and the `chat_sessions` schema. Structure the project with a clear directory layout for routes, models, and services.",
+        "testStrategy": "Run the FastAPI container. Access the auto-generated OpenAPI docs at `/docs` to ensure the application is running. Write a simple health check endpoint (e.g., `/health`) that returns a 200 OK status. Write a unit test that attempts to connect to the MongoDB container.",
+        "priority": "high",
+        "dependencies": [
+          11
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 13,
+        "title": "Implement Celery Worker for PDF Processing Pipeline",
+        "description": "Implement the asynchronous Celery worker for the document processing pipeline. This task will handle PDF text extraction, chunking, embedding generation, and storage into MongoDB and Qdrant.",
+        "details": "Configure Celery to use the Redis container as its broker and result backend. Create a task function, e.g., `process_pdf(document_id)`. Inside this task: 1. Fetch document metadata from MongoDB using `document_id`. 2. Use `PyMuPDF` to extract text and page numbers. 3. Use `LangChain`'s text splitters to chunk the extracted text. 4. Use a `sentence-transformers` model to generate vector embeddings for each chunk. 5. Store the text chunks, page numbers, and document ID as payloads in Qdrant. 6. Update the document's status in MongoDB to 'completed' or 'failed'.",
+        "testStrategy": "Create a test script that manually places a task on the Redis queue. Monitor the Celery worker logs to see it pick up and execute the task. After execution, query MongoDB to verify the document status has been updated. Query Qdrant to confirm that vector points with the correct payloads (text chunk, doc_id, page_number) have been created.",
+        "priority": "high",
+        "dependencies": [
+          11,
+          12
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 14,
+        "title": "Create Backend Endpoint for Batch PDF Upload",
+        "description": "Create the multipart file upload endpoint in FastAPI. This endpoint will receive batch PDF uploads, create initial records in MongoDB, and dispatch processing tasks to the Celery queue.",
+        "details": "Implement the `POST /api/v1/documents/upload` endpoint using FastAPI's `UploadFile`. The endpoint should handle multiple files. For each file: 1. Create a document record in the `documents` collection in MongoDB with `status: 'processing'`. 2. Save the file to a temporary volume accessible by the Celery worker. 3. Dispatch the `process_pdf` Celery task, passing the newly created MongoDB document ID. 4. Return a response to the client with the IDs and initial status of the uploaded documents.",
+        "testStrategy": "Use a tool like `curl` or Postman to send a multipart/form-data request with one or more PDF files to the endpoint. Verify that a 200/201 status code is returned. Check MongoDB to confirm that new document records have been created with 'processing' status. Check Redis or Celery logs to confirm that a task has been enqueued for each file.",
+        "priority": "high",
+        "dependencies": [
+          12,
+          13
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 15,
+        "title": "Create Endpoint to Get Document Status",
+        "description": "Implement the backend endpoint to list all documents for a user and their current processing status. This allows the frontend to poll for updates after an upload.",
+        "details": "Create the `GET /api/v1/documents` endpoint in FastAPI. The endpoint will query the `documents` collection in MongoDB for all records associated with the current user (initially, can be a hardcoded user_id). It should return an array of document objects, including their `_id`, `filename`, and `status`.",
+        "testStrategy": "After uploading a document using the endpoint from task 14, call this GET endpoint. Verify that the response contains the uploaded document with the status 'processing'. After the Celery worker (task 13) has finished, call the endpoint again and verify the status has changed to 'completed'.",
+        "priority": "medium",
+        "dependencies": [
+          12
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 16,
+        "title": "Implement Secure API Key Management",
+        "description": "Implement the backend logic and API endpoint for securely managing user-provided LLM API keys. Keys must be encrypted before being stored in the database.",
+        "details": "Create the `POST /api/v1/keys` endpoint. Use the `cryptography.fernet` library for symmetric encryption. Generate a secret key and store it securely as an environment variable (not in git). When a user submits an API key, encrypt it using Fernet before saving it to a user settings collection in MongoDB. Create a utility function to decrypt the key in-memory only when it's needed for an API call.",
+        "testStrategy": "Write unit tests for the encryption/decryption logic to ensure a key can be encrypted and then decrypted back to its original value. Use an API client to POST a key to the endpoint. Manually inspect the MongoDB record to confirm the key is stored in an encrypted, non-human-readable format.",
+        "priority": "high",
+        "dependencies": [
+          12
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 17,
+        "title": "Implement Core RAG Streaming Chat Endpoint",
+        "description": "Implement the core Retrieval-Augmented Generation (RAG) logic within a streaming chat endpoint. This endpoint will handle user questions, query the vector database, and stream responses from the LLM.",
+        "details": "Create the `POST /api/v1/chat` endpoint. It should accept a user query and a list of document IDs for context. 1. Embed the user query using the same `sentence-transformers` model. 2. Query Qdrant for the most similar vector chunks, filtering by the provided document IDs. 3. Retrieve the associated text chunks and metadata (source document, page number). 4. Format a prompt for the LLM (Gemini or OpenAI) including the user's question and the retrieved context. 5. Use the LLM's client library to make a streaming API call. 6. Use FastAPI's `StreamingResponse` with Server-Sent Events (SSE) to stream the LLM's response back to the client, including source citation data in the final payload.",
+        "testStrategy": "After processing a document, send a request to this endpoint with a question about the document's content. Verify that a streaming response is initiated. Check that the final response contains text generated by the LLM and includes accurate source citations (document ID and page number) derived from the Qdrant payload.",
+        "priority": "high",
+        "dependencies": [
+          13,
+          16
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 18,
+        "title": "Initialize React Frontend with Three-Panel Layout",
+        "description": "Set up the basic React frontend application using Vite. Create the main application shell, including the three-panel layout structure (document list, chat window, source viewer) as described in the PRD.",
+        "details": "Initialize a new React + TypeScript project with Vite. Set up the basic component structure: `App.tsx` as the main entry point, and placeholder components for `DocumentListPanel`, `ChatPanel`, and `SourceViewerPanel`. Use CSS or a UI library to create the flexbox/grid layout. Configure `axios` for API calls and a state management library like `Zustand` for managing global state (e.g., document list, chat messages).",
+        "testStrategy": "Run the frontend development server via `docker-compose up`. Access the application in a browser and verify that the three-panel layout is rendered correctly. The panels can be empty or contain placeholder text, but the structure should be in place.",
+        "priority": "medium",
+        "dependencies": [
+          11
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 19,
+        "title": "Integrate Frontend File Upload and Status Polling",
+        "description": "Implement the file upload component in the React frontend. This includes the drag-and-drop UI, calling the backend upload endpoint, and polling for status updates to display to the user.",
+        "details": "In the `DocumentListPanel` component, create a drag-and-drop zone for file uploads. On file drop, use `axios` to send a `POST` request with the `FormData` to the `/api/v1/documents/upload` endpoint. Upon receiving a successful response, add the documents to the Zustand store with their initial 'processing' status. Implement a polling mechanism using `setInterval` or a custom hook that periodically calls the `GET /api/v1/documents` endpoint to update the status of each document in the UI.",
+        "testStrategy": "Drag and drop a PDF file onto the upload area. Verify the UI shows the file with a 'processing' indicator. Open the browser's network tab to confirm the `POST` request is sent correctly and that subsequent `GET` requests are made to the status endpoint. Verify the UI updates to 'completed' once the backend processing is finished.",
+        "priority": "medium",
+        "dependencies": [
+          14,
+          15,
+          18
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 20,
+        "title": "Integrate Frontend Chat with Streaming and Citations",
+        "description": "Build the chat interface in the React frontend and connect it to the backend's streaming chat endpoint. The UI must render the streamed response tokens in real-time and display source citations.",
+        "details": "In the `ChatPanel` component, create a message display area and a text input form. When the user submits a message, send a `POST` request to `/api/v1/chat`. Use the `Fetch API` with a `ReadableStream` or a library that supports SSE to handle the streaming response. Append incoming text tokens to the current AI message being displayed. Once the stream is complete, parse the final payload for source citations and render them as clickable links below the message.",
+        "testStrategy": "After a document is processed, type a question into the chat input and submit. Verify that the AI's response appears token-by-token in the chat window, not all at once. After the response is complete, check that the source citations are displayed correctly. Click a citation and verify it triggers the intended action (e.g., highlighting source text in the right panel).",
+        "priority": "medium",
+        "dependencies": [
+          17,
+          19
+        ],
+        "status": "pending",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2025-07-29T13:02:35.628Z",
+      "updated": "2025-07-29T13:31:14.962Z",
+      "description": "Tasks for master context"
+    }
+  }
+}
